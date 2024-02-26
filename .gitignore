@@ -1,0 +1,5 @@
+# avoid all __pycache__ files
+global-exclude __pycache__ *.py[cod]
+global-exclude *.pyc
+data
+results
