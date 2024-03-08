@@ -58,12 +58,15 @@ def compute_rewrite_quality_counterfact(
         attribute_prompts,
     ]
     # Flatten all the evaluated prefixes into one list.
-    probs = test_batch_prediction(
+    probs, entropies = test_batch_prediction(
         model, tok, list(chain(*prob_prompts)), target_new["str"], target_true["str"]
     )
+
     # Unflatten the results again into a list of lists.
     cutoffs = [0] + np.cumsum(list(map(len, prob_prompts))).tolist()
     ret_probs = [probs[cutoffs[i - 1] : cutoffs[i]] for i in range(1, len(cutoffs))]
+    ret_entropies = [entropies[cutoffs[i - 1]: cutoffs[i]] for i in range(1, len(cutoffs))]
+
     # Structure the restuls as a dictionary.
     ret = {
         f"{key}_probs": ret_probs[i]
@@ -76,6 +79,18 @@ def compute_rewrite_quality_counterfact(
             ]
         )
     }
+
+    ret.update({
+        f"{key}_entropies": ret_entropies[i]
+        for i, key in enumerate(
+            [
+                "rewrite_prompts",
+                "paraphrase_prompts",
+                "neighborhood_prompts",
+                "attribute_prompts",
+            ]
+        )
+    })
 
     if snips is not None:
         # Gather reference texts
@@ -139,6 +154,7 @@ def test_batch_prediction(
         logits = all_logits
 
     results = np.zeros((len(logits),), dtype=np.float32)
+    entropies = np.zeros((len(logits),), dtype=np.float32)
 
     for i in range(len(logits)):
         cur_len = choice_a_len if i % 2 == 0 else choice_b_len
@@ -147,11 +163,22 @@ def test_batch_prediction(
             results[i] += -torch.nn.functional.log_softmax(
                 logits[i][prefix_lens[i // 2] + j - 1, :], dim=0
             )[cur_tok].item()
+
+            # Convert logits to probabilities using softmax
+            probs = torch.softmax(logits[i][prefix_lens[i // 2] + j - 1, :], dim=0)
+            # Calculate entropy
+            entropy = -(probs * torch.log(probs)).sum()
+            entropies[i] += entropy.item()
+
         results[i] /= cur_len
+        entropies[i] /= cur_len
 
     return [
         {"target_new": results[i].item(), "target_true": results[i + 1].item()}
         for i in range(0, len(results), 2)
+    ], [
+        {"target_new": entropies[i].item(), "target_true": entropies[i + 1].item()}
+        for i in range(0, len(entropies), 2)
     ]
 
 def test_generation(

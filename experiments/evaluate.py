@@ -1,22 +1,23 @@
 import json
-import os
 import shutil
-import pandas as pd
-from pathlib import Path
+from itertools import islice
 from time import time
 from typing import Tuple, Union
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from baselines.ft import FTHyperParams, apply_ft_to_model
 from dsets import (
     AttributeSnippets,
     CounterFactDataset,
     MENDQADataset,
+    MultiCounterFactDataset,
     get_tfidf_vectorizer,
 )
 from experiments.py.eval_utils_counterfact import compute_rewrite_quality_counterfact
 from experiments.py.eval_utils_zsre import compute_rewrite_quality_zsre
+from memit import MEMITHyperParams, apply_memit_to_model
 from rome import ROMEHyperParams, apply_rome_to_model
 from util import nethook
 from util.globals import *
@@ -24,12 +25,15 @@ from util.globals import *
 ALG_DICT = {
     "ROME": (ROMEHyperParams, apply_rome_to_model),
     "FT": (FTHyperParams, apply_ft_to_model),
+    "MEMIT": (MEMITHyperParams, apply_memit_to_model),
 }
 
 DS_DICT = {
+    "mcf": (MultiCounterFactDataset, compute_rewrite_quality_counterfact),
     "cf": (CounterFactDataset, compute_rewrite_quality_counterfact),
     "zsre": (MENDQADataset, compute_rewrite_quality_zsre),
 }
+
 
 def main(
     alg_name: str,
@@ -39,20 +43,23 @@ def main(
     dataset_size_limit: int,
     continue_from_run: str,
     skip_generation_tests: bool,
+    generation_test_interval: int,
     conserve_memory: bool,
     dir_name: str,
+    num_edits: int = 1,
+    use_cache: bool = False,
 ):
-    if not alg_name == 'Memory':
-        # Set algorithm-specific variables
-        params_class, apply_algo = ALG_DICT[alg_name]
+    # Set algorithm-specific variables
+    params_class, apply_algo = ALG_DICT[alg_name]
 
     # Determine run directory
-    if continue_from_run is not None:
-        run_dir = RESULTS_DIR / dir_name / continue_from_run
-        assert (
-            run_dir.exists()
-        ), f"If continuing from run, {continue_from_run} must exist!"
-    else:
+    # Create new dir if not continuing from prev run OR prev run doesn't exist
+    if (
+        continue_from_run is None
+        or not (run_dir := RESULTS_DIR / dir_name / continue_from_run).exists()
+    ):
+        continue_from_run = None
+    if continue_from_run is None:
         alg_dir = RESULTS_DIR / dir_name
         if alg_dir.exists():
             id_list = [
@@ -112,14 +119,27 @@ def main(
         tok.pad_token = tok.eos_token
     else:
         model, tok = model_name
+        model_name = model.config._name_or_path
 
     # Load data
     print("Loading dataset, attribute snippets, tf-idf data")
     snips = AttributeSnippets(DATA_DIR) if not skip_generation_tests else None
     # vec = get_tfidf_vectorizer(DATA_DIR) if not skip_generation_tests else None
+    if num_edits > 1:
+        assert ds_name != "cf", f"{ds_name} does not support multiple edits"
 
     ds_class, ds_eval_method = DS_DICT[ds_name]
-    ds = ds_class(DATA_DIR, size=dataset_size_limit, tok=tok)
+    ds = ds_class(DATA_DIR, tok=tok, size=dataset_size_limit)
+
+    # # Get cache templates
+    # cache_template = None
+    # if use_cache:
+    #     cache_template = (
+    #         KV_DIR
+    #         / f"{model_name.replace('/', '_')}_{alg_name}"
+    #         / f"{ds_name}_layer_{{}}_clamp_{{}}_case_{{}}.npz"
+    #     )
+    #     print(f"Will load cache from {cache_template}")
 
     # Iterate through dataset
     for record in ds:

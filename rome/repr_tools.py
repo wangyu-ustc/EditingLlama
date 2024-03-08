@@ -73,9 +73,20 @@ def get_words_idxs_in_templates(
     assert len(prefixes) == len(words) == len(suffixes)
     n = len(prefixes)
     batch_tok = tok([*prefixes, *words, *suffixes], add_special_tokens=False)
+
+    # import ipdb; ipdb.set_trace()
+
     prefixes_tok, words_tok, suffixes_tok = [
         batch_tok[i : i + n] for i in range(0, n * 3, n)
     ]
+    # prefixes_tok, words_tok, suffixes_tok = [
+    #     {
+    #         'input_ids': batch_tok['input_ids'][i:i+n],
+    #         'attention_mask': batch_tok['attention_mask'][i:i+n]
+    #     } for i in range(0, n*3, n)
+    # ]
+
+    # import ipdb; ipdb.set_trace()
 
     if isinstance(tok, LlamaTokenizer):
         prefixes_len, words_len, suffixes_len = [
